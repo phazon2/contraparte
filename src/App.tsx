@@ -12,6 +12,7 @@ import {
 // ─── Types ────────────────────────────────────────────────────────
 
 type Verdict = "red" | "yellow" | "green";
+type Phase = "warming" | "analyzing" | "done";
 
 interface PanelResult {
   model_name: string;
@@ -24,9 +25,8 @@ interface PanelResult {
   error?: string;
 }
 
-interface PanelCardData {
-  modelName: string;
-  loading: boolean;
+interface CardState {
+  phase: Phase;
   result: PanelResult | null;
 }
 
@@ -35,7 +35,7 @@ interface PanelCardData {
 const EDGE_FN_URL =
   "https://bmwqujfpnawflnkcsicm.supabase.co/functions/v1/review-clause";
 
-const MODEL_ORDER: { id: string }[] = [
+const MODEL_ORDER = [
   { id: "Hermes 3 (Llama 70B)" },
   { id: "Qwen 2.5 72B" },
   { id: "Mistral Small 3.2" },
@@ -53,6 +53,60 @@ const RISK_TYPE_MAP: Record<string, string> = {
   non_compete: "No competencia",
   other: "Otro",
 };
+
+// ─── SSE consumer (POST + ReadableStream, EventSource can't POST) ─
+
+async function consumeSSE(
+  url: string,
+  body: unknown,
+  onEvent: (type: string, data: any) => void,
+  signal: AbortSignal
+) {
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    signal,
+  });
+
+  if (!response.ok) {
+    const text = await response.text().catch(() => "");
+    throw new Error(text ? `Error del panel: ${text}` : `Error ${response.status}`);
+  }
+  if (!response.body) {
+    throw new Error("El panel no devolvió respuesta");
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    const blocks = buffer.split("\n\n");
+    buffer = blocks.pop() ?? "";
+
+    for (const block of blocks) {
+      let type = "message";
+      const dataLines: string[] = [];
+      for (const line of block.split("\n")) {
+        if (line.startsWith("event:")) type = line.slice(6).trim();
+        else if (line.startsWith("data:")) dataLines.push(line.slice(5).trim());
+      }
+      if (dataLines.length === 0) continue;
+      let parsed: any = {};
+      try {
+        parsed = JSON.parse(dataLines.join("\n"));
+      } catch {
+        parsed = { raw: dataLines.join("\n") };
+      }
+      onEvent(type, parsed);
+    }
+  }
+}
 
 // ─── Helpers ──────────────────────────────────────────────────────
 
@@ -84,12 +138,9 @@ function verdictPillClasses(v: Verdict | null) {
 
 // ─── PanelCard ────────────────────────────────────────────────────
 
-function PanelCard({ data: { modelName, loading, result } }: { data: PanelCardData }) {
-  const showSkeleton = loading && !result;
-  const showAnalyzing = loading && result;
-  const showResult = !loading && result;
+function PanelCard({ modelName, state }: { modelName: string; state: CardState }) {
+  const { phase, result } = state;
 
-  // Determine card border color based on verdict
   const cardBorder =
     result?.verdict === "red"
       ? "border-roja/20"
@@ -98,6 +149,8 @@ function PanelCard({ data: { modelName, loading, result } }: { data: PanelCardDa
         : result?.verdict === "green"
           ? "border-verde/20"
           : "border-border";
+
+  const pillVerdict = phase === "done" ? (result?.verdict ?? null) : null;
 
   return (
     <div
@@ -115,23 +168,23 @@ function PanelCard({ data: { modelName, loading, result } }: { data: PanelCardDa
         </div>
         <span
           className={`shrink-0 inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-bold uppercase tracking-wider border transition-all duration-300 ${verdictPillClasses(
-            showSkeleton ? null : result?.verdict ?? null
+            pillVerdict
           )}`}
         >
-          {showSkeleton && (
+          {phase === "warming" && (
             <>
               <span className="w-1.5 h-1.5 rounded-full bg-foreground/30 animate-pulse" />
               calentando modelo…
             </>
           )}
-          {showAnalyzing && (
+          {phase === "analyzing" && (
             <>
               <span className="w-1.5 h-1.5 rounded-full bg-foreground/40 animate-pulse" />
               analizando…
             </>
           )}
-          {showResult && result!.status === "error" && <>SIN VEREDICTO</>}
-          {showResult && result!.status === "success" && (
+          {phase === "done" && result!.status === "error" && <>SIN VEREDICTO</>}
+          {phase === "done" && result!.status === "success" && (
             <>
               {verdictIcon(result!.verdict!)}
               {result!.verdict === "red"
@@ -144,8 +197,8 @@ function PanelCard({ data: { modelName, loading, result } }: { data: PanelCardDa
         </span>
       </div>
 
-      {/* Skeleton loader */}
-      {showSkeleton && (
+      {/* Loading skeleton */}
+      {(phase === "warming" || phase === "analyzing") && (
         <div className="space-y-2" aria-hidden="true">
           <div className="h-3 bg-muted rounded w-full animate-pulse" />
           <div className="h-3 bg-muted rounded w-3/4 animate-pulse" />
@@ -153,25 +206,16 @@ function PanelCard({ data: { modelName, loading, result } }: { data: PanelCardDa
         </div>
       )}
 
-      {/* Analyzing pulse */}
-      {showAnalyzing && (
-        <div className="space-y-2" aria-hidden="true">
-          <div className="h-3 bg-muted/60 rounded w-full animate-pulse" />
-          <div className="h-3 bg-muted/60 rounded w-3/4 animate-pulse" />
-        </div>
-      )}
-
       {/* Error state */}
-      {showResult && result!.status === "error" && (
+      {phase === "done" && result!.status === "error" && (
         <p className="text-xs text-foreground/50 italic">
-          {result!.error || "Error al procesar la cláusula"}
+          {result!.error || "El modelo no pudo emitir un veredicto"}
         </p>
       )}
 
       {/* Verdict content */}
-      {showResult && result!.status === "success" && (
+      {phase === "done" && result!.status === "success" && (
         <div className="space-y-3">
-          {/* Verdict + risk type badge */}
           <div className="flex items-center gap-2.5 flex-wrap">
             <span
               className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-md text-xs font-bold uppercase tracking-wider ${verdictPillClasses(
@@ -192,12 +236,10 @@ function PanelCard({ data: { modelName, loading, result } }: { data: PanelCardDa
             )}
           </div>
 
-          {/* Reason */}
           <p className="text-sm text-foreground/85 leading-relaxed">
             {result!.plain_reason_es}
           </p>
 
-          {/* Suggested redline */}
           {result!.suggested_redline && (
             <div className="border border-accent/25 rounded-lg bg-accent/5 p-3">
               <p className="text-[11px] font-bold text-accent uppercase tracking-wider mb-1.5">
@@ -254,68 +296,65 @@ export default function App() {
   const [clauseText, setClauseText] = useState("");
   const [submitted, setSubmitted] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [results, setResults] = useState<Record<string, PanelResult> | null>(
-    null
-  );
+  const [cards, setCards] = useState<Record<string, CardState> | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const abortRef = useRef<AbortController | null>(null);
 
   const handleSubmit = useCallback(async () => {
     const text = clauseText.trim();
     if (!text || loading) return;
 
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+
+    // All cards start "calentando modelo…" (cold start window)
+    const initial: Record<string, CardState> = {};
+    for (const m of MODEL_ORDER) {
+      initial[m.id] = { phase: "warming", result: null };
+    }
+
     setLoading(true);
     setSubmitted(true);
     setError(null);
-    setResults(null);
+    setCards(initial);
 
     try {
-      const response = await fetch(EDGE_FN_URL, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ clause_text: text }),
-      });
+      await consumeSSE(
+        EDGE_FN_URL,
+        { clause_text: text },
+        (type, data) => {
+          setCards((prev) => {
+            if (!prev) return prev;
+            const name: string = data?.model_name;
+            if (!name || !(name in prev)) return prev;
 
-      if (!response.ok) {
-        const errBody = await response.text().catch(() => "");
-        throw new Error(
-          errBody ? `Error del panel: ${errBody}` : `Error ${response.status}`
-        );
-      }
+            if (type === "start") {
+              // Model fetch dispatched → still waiting, now "analyzing"
+              return { ...prev, [name]: { phase: "analyzing", result: null } };
+            }
 
-      const data = await response.json();
-      if (!data.panel || !Array.isArray(data.panel)) {
-        throw new Error("Respuesta inválida del panel de revisión");
-      }
+            if (type === "result") {
+              const result: PanelResult = {
+                model_name: name,
+                status: data.status ?? "error",
+                verdict: data.verdict,
+                risk_type: data.risk_type,
+                plain_reason_es: data.plain_reason_es,
+                plain_reason_en: data.plain_reason_en,
+                suggested_redline: data.suggested_redline,
+                error: data.error,
+              };
+              return { ...prev, [name]: { phase: "done", result } };
+            }
 
-      // Build result map for lookup
-      const map: Record<string, PanelResult> = {};
-      for (const r of data.panel) {
-        map[r.model_name] = r;
-      }
-
-      // Stagger reveal by 500ms per card for natural feel
-      const stagger: PanelResult[] = data.panel;
-      for (let i = 0; i < stagger.length; i++) {
-        const partial = { ...map };
-
-        // reveal first one immediately, then stagger the rest
-        if (i === 0) {
-          setResults(partial);
-        } else {
-          await new Promise((r) => setTimeout(r, 500));
-          // include previously revealed ones + this one
-          const revealed: Record<string, PanelResult> = {};
-          for (let j = 0; j <= i; j++) {
-            revealed[stagger[j].model_name] = stagger[j];
-          }
-          setResults(revealed);
-        }
-      }
-
-      // Final set with all
-      setResults(map);
+            return prev;
+          });
+        },
+        controller.signal
+      );
     } catch (err: any) {
+      if (err?.name === "AbortError") return;
       setError(err.message || "Error al conectar con el panel de revisión");
     } finally {
       setLoading(false);
@@ -329,8 +368,8 @@ export default function App() {
     }
   };
 
-  const orderedResults = MODEL_ORDER.map((m) =>
-    results?.[m.id] ?? null
+  const orderedResults = MODEL_ORDER.map(
+    (m) => cards?.[m.id]?.result ?? null
   ).filter(Boolean) as PanelResult[];
 
   return (
@@ -351,7 +390,6 @@ export default function App() {
       {/* ── Input ────────────────────────────────────────────── */}
       <section className="px-4 pb-6 max-w-3xl mx-auto w-full">
         <textarea
-          ref={textareaRef}
           value={clauseText}
           onChange={(e) => setClauseText(e.target.value)}
           onKeyDown={handleKeyDown}
@@ -380,18 +418,11 @@ export default function App() {
       </section>
 
       {/* ── Panel cards ─────────────────────────────────────── */}
-      {submitted && (
+      {submitted && cards && (
         <section className="px-4 pb-8 max-w-3xl mx-auto w-full">
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             {MODEL_ORDER.map((m) => (
-              <PanelCard
-                key={m.id}
-                data={{
-                  modelName: m.id,
-                  loading: !results?.[m.id],
-                  result: results?.[m.id] ?? null,
-                }}
-              />
+              <PanelCard key={m.id} modelName={m.id} state={cards[m.id]} />
             ))}
           </div>
 
