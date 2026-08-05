@@ -7,28 +7,10 @@ import {
   Clock,
   AlertCircle,
   FileText,
+  Layers,
 } from "lucide-react";
-
-// ─── Types ────────────────────────────────────────────────────────
-
-type Verdict = "red" | "yellow" | "green";
-type Phase = "warming" | "analyzing" | "done";
-
-interface PanelResult {
-  model_name: string;
-  status: string;
-  verdict?: Verdict;
-  risk_type?: string;
-  plain_reason_es?: string;
-  plain_reason_en?: string;
-  suggested_redline?: string;
-  error?: string;
-}
-
-interface CardState {
-  phase: Phase;
-  result: PanelResult | null;
-}
+import type { PanelResult, Verdict, CardState } from "./types";
+import FullContractReview from "./FullContractReview";
 
 // ─── Constants ────────────────────────────────────────────────────
 
@@ -290,9 +272,42 @@ function ConsensusBadge({ results }: { results: PanelResult[] }) {
   );
 }
 
-// ─── App ──────────────────────────────────────────────────────────
+// ─── Mode Toggle ──────────────────────────────────────────────────
 
-export default function App() {
+type Mode = "clause" | "contract";
+
+function ModeToggle({ mode, onChange }: { mode: Mode; onChange: (m: Mode) => void }) {
+  return (
+    <div className="flex items-center gap-1 rounded-xl border border-border bg-card p-0.5">
+      <button
+        onClick={() => onChange("clause")}
+        className={`flex items-center gap-2 px-4 py-2 rounded-[10px] text-xs font-semibold uppercase tracking-wider transition-all cursor-pointer ${
+          mode === "clause"
+            ? "bg-accent text-white shadow-sm"
+            : "text-foreground/50 hover:text-foreground/70"
+        }`}
+      >
+        <FileText className="w-3.5 h-3.5" />
+        Una cláusula
+      </button>
+      <button
+        onClick={() => onChange("contract")}
+        className={`flex items-center gap-2 px-4 py-2 rounded-[10px] text-xs font-semibold uppercase tracking-wider transition-all cursor-pointer ${
+          mode === "contract"
+            ? "bg-accent text-white shadow-sm"
+            : "text-foreground/50 hover:text-foreground/70"
+        }`}
+      >
+        <Layers className="w-3.5 h-3.5" />
+        Contrato completo
+      </button>
+    </div>
+  );
+}
+
+// ─── Single Clause Flow ───────────────────────────────────────────
+
+function SingleClauseFlow() {
   const [clauseText, setClauseText] = useState("");
   const [submitted, setSubmitted] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -308,7 +323,6 @@ export default function App() {
     const controller = new AbortController();
     abortRef.current = controller;
 
-    // All cards start "calentando modelo…" (cold start window)
     const initial: Record<string, CardState> = {};
     for (const m of MODEL_ORDER) {
       initial[m.id] = { phase: "warming", result: null };
@@ -330,7 +344,6 @@ export default function App() {
             if (!name || !(name in prev)) return prev;
 
             if (type === "start") {
-              // Model fetch dispatched → still waiting, now "analyzing"
               return { ...prev, [name]: { phase: "analyzing", result: null } };
             }
 
@@ -373,22 +386,9 @@ export default function App() {
   ).filter(Boolean) as PanelResult[];
 
   return (
-    <div className="min-h-screen bg-background flex flex-col">
-      {/* ── Header ──────────────────────────────────────────── */}
-      <header className="pt-10 pb-6 px-4 text-center">
-        <div className="flex items-center justify-center gap-3 mb-2">
-          <FileText className="w-7 h-7 text-primary" />
-          <h1 className="font-heading text-3xl md:text-4xl font-bold text-foreground tracking-tight">
-            Contraparte
-          </h1>
-        </div>
-        <p className="text-sm md:text-base text-foreground/60 max-w-lg mx-auto font-light">
-          Tres IAs independientes leen tu contrato antes de que firmes.
-        </p>
-      </header>
-
-      {/* ── Input ────────────────────────────────────────────── */}
-      <section className="px-4 pb-6 max-w-3xl mx-auto w-full">
+    <div className="flex flex-col gap-6">
+      {/* ── Input ── */}
+      <section className="max-w-3xl mx-auto w-full px-4">
         <textarea
           value={clauseText}
           onChange={(e) => setClauseText(e.target.value)}
@@ -417,9 +417,9 @@ export default function App() {
         </button>
       </section>
 
-      {/* ── Panel cards ─────────────────────────────────────── */}
+      {/* ── Panel cards ── */}
       {submitted && cards && (
-        <section className="px-4 pb-8 max-w-3xl mx-auto w-full">
+        <section className="max-w-3xl mx-auto w-full px-4">
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             {MODEL_ORDER.map((m) => (
               <PanelCard key={m.id} modelName={m.id} state={cards[m.id]} />
@@ -430,16 +430,45 @@ export default function App() {
         </section>
       )}
 
-      {/* ── Error ────────────────────────────────────────────── */}
+      {/* ── Error ── */}
       {error && (
-        <section className="px-4 pb-4 max-w-3xl mx-auto w-full">
+        <section className="max-w-3xl mx-auto w-full px-4">
           <div className="rounded-xl border border-destructive/30 bg-destructive/10 p-4 text-sm text-destructive text-center">
             {error}
           </div>
         </section>
       )}
+    </div>
+  );
+}
 
-      {/* ── Footer ──────────────────────────────────────────── */}
+// ─── App ──────────────────────────────────────────────────────────
+
+export default function App() {
+  const [mode, setMode] = useState<Mode>("clause");
+
+  return (
+    <div className="min-h-screen bg-background flex flex-col">
+      {/* ── Header ── */}
+      <header className="pt-8 pb-5 px-4 text-center flex flex-col items-center gap-4">
+        <div className="flex items-center justify-center gap-3 mb-1">
+          <FileText className="w-7 h-7 text-primary" />
+          <h1 className="font-heading text-3xl md:text-4xl font-bold text-foreground tracking-tight">
+            Contraparte
+          </h1>
+        </div>
+        <p className="text-sm md:text-base text-foreground/60 max-w-lg mx-auto font-light">
+          Tres IAs independientes leen tu contrato antes de que firmes.
+        </p>
+
+        {/* Mode toggle */}
+        <ModeToggle mode={mode} onChange={setMode} />
+      </header>
+
+      {/* ── Content ── */}
+      {mode === "clause" ? <SingleClauseFlow /> : <FullContractReview />}
+
+      {/* ── Footer ── */}
       <footer className="mt-auto py-6 px-4 text-center">
         <p className="text-xs text-foreground/30 font-light">
           Contraparte explica y redacta. No es asesoría legal.
