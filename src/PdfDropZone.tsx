@@ -28,7 +28,7 @@ export default function PdfDropZone({ onTextExtracted, label }: PdfDropZoneProps
     try {
       const arrayBuffer = await file.arrayBuffer();
       const data = new Uint8Array(arrayBuffer);
-      const pdf = await pdfjsLib.getDocument(data).promise;
+      const pdf = await pdfjsLib.getDocument({ data }).promise;
 
       let fullText = "";
       for (let i = 1; i <= pdf.numPages; i++) {

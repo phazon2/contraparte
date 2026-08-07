@@ -8,10 +8,12 @@ import {
   AlertCircle,
   FileText,
   Layers,
+  Play,
 } from "lucide-react";
 import type { PanelResult, Verdict, CardState } from "./types";
 import FullContractReview from "./FullContractReview";
 import PdfDropZone from "./PdfDropZone";
+import { DEMO_CONTRACT } from "./demoContract";
 
 // ─── Constants ────────────────────────────────────────────────────
 
@@ -369,7 +371,15 @@ function SingleClauseFlow() {
       );
     } catch (err: any) {
       if (err?.name === "AbortError") return;
-      setError(err.message || "Error al conectar con el panel de revisión");
+      const raw = String(err?.message || "");
+      const isNetwork =
+        (typeof navigator !== "undefined" && navigator.onLine === false) ||
+        /failed to fetch|networkerror|load failed|network request failed/i.test(raw);
+      setError(
+        isNetwork
+          ? "No pude conectar con el panel. Revisa tu conexión e inténtalo de nuevo — tu cláusula sigue aquí, no se perdió."
+          : raw || "Error al conectar con el panel de revisión"
+      );
     } finally {
       setLoading(false);
     }
@@ -389,7 +399,24 @@ function SingleClauseFlow() {
   return (
     <div className="flex flex-col gap-6">
       {/* ── Input ── */}
-      <section className="max-w-3xl mx-auto w-full px-4">
+      <section className="max-w-3xl mx-auto w-full px-4 flex flex-col gap-3">
+        {/* Error banner: pushes content down, never replaces */}
+        {error && (
+          <div
+            role="alert"
+            className="rounded-xl border border-destructive/40 bg-destructive/10 p-4 flex flex-col items-center gap-3"
+          >
+            <p className="text-sm text-destructive leading-relaxed text-center">
+              {error}
+            </p>
+            <button
+              onClick={handleSubmit}
+              className="rounded-lg border border-destructive/40 bg-card text-destructive font-semibold px-4 py-2 text-xs transition-all hover:bg-destructive/10 cursor-pointer"
+            >
+              Intentar de nuevo
+            </button>
+          </div>
+        )}
         <textarea
           value={clauseText}
           onChange={(e) => setClauseText(e.target.value)}
@@ -406,7 +433,7 @@ function SingleClauseFlow() {
         <button
           onClick={handleSubmit}
           disabled={!clauseText.trim() || loading}
-          className="mt-3 w-full flex items-center justify-center gap-2 rounded-xl bg-accent text-white font-semibold px-6 py-3 text-sm transition-all duration-200 hover:bg-accent-hover active:scale-[0.98] disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-accent disabled:active:scale-100 cursor-pointer"
+          className="w-full flex items-center justify-center gap-2 rounded-xl bg-accent text-white font-semibold px-6 py-3 text-sm transition-all duration-200 hover:bg-accent-hover active:scale-[0.98] disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-accent disabled:active:scale-100 cursor-pointer"
         >
           {loading ? (
             <>
@@ -434,15 +461,6 @@ function SingleClauseFlow() {
           <ConsensusBadge results={orderedResults} />
         </section>
       )}
-
-      {/* ── Error ── */}
-      {error && (
-        <section className="max-w-3xl mx-auto w-full px-4">
-          <div className="rounded-xl border border-destructive/30 bg-destructive/10 p-4 text-sm text-destructive text-center">
-            {error}
-          </div>
-        </section>
-      )}
     </div>
   );
 }
@@ -451,6 +469,15 @@ function SingleClauseFlow() {
 
 export default function App() {
   const [mode, setMode] = useState<Mode>("clause");
+  const [demoKey, setDemoKey] = useState(0);
+  const [demoTrigger, setDemoTrigger] = useState<{ text: string; key: number } | null>(null);
+
+  const handleDemoContract = useCallback(() => {
+    const nextKey = demoKey + 1;
+    setDemoKey(nextKey);
+    setDemoTrigger({ text: DEMO_CONTRACT, key: nextKey });
+    setMode("contract");
+  }, [demoKey]);
 
   return (
     <div className="min-h-screen bg-background flex flex-col">
@@ -463,18 +490,46 @@ export default function App() {
           </h1>
         </div>
         <p className="text-sm md:text-base text-foreground/60 max-w-lg mx-auto font-light">
-          Tres IAs independientes leen tu contrato antes de que firmes.
+          Tres IAs independientes leen tu contrato antes de que firmes —
+          y redactan tu contrapropuesta, en tu idioma.
+        </p>
+        <p className="text-xs md:text-sm text-foreground/40 max-w-lg mx-auto font-light -mt-2">
+          Three independent AIs read your contract before you sign it — and write
+          your counter-move, in your language.
         </p>
 
         {/* Mode toggle */}
         <ModeToggle mode={mode} onChange={setMode} />
+
+        {/* Demo button */}
+        <div className="flex flex-col items-center gap-1">
+          <button
+            onClick={handleDemoContract}
+            className="inline-flex items-center gap-2 rounded-xl border border-accent/40 text-accent font-semibold px-5 py-2.5 text-sm transition-all duration-200 hover:bg-accent/10 active:scale-[0.97] cursor-pointer"
+          >
+            <Play className="w-4 h-4" />
+            Ver un ejemplo real
+          </button>
+          <span className="text-[10px] text-foreground/30">
+            Contrato real (anonimizado) · 60 segundos
+          </span>
+        </div>
       </header>
 
       {/* ── Content ── */}
-      {mode === "clause" ? <SingleClauseFlow /> : <FullContractReview />}
+      {mode === "clause" ? (
+        <SingleClauseFlow />
+      ) : (
+        <FullContractReview demoTrigger={demoTrigger} />
+      )}
 
       {/* ── Footer ── */}
-      <footer className="mt-auto py-6 px-4 text-center">
+      <footer className="mt-auto py-6 px-4 text-center flex flex-col items-center gap-2">
+        <p className="text-[10px] text-foreground/30 leading-relaxed">
+          Panel de 3 modelos abiertos servido por Featherless AI ·
+          Hermes 3 (Llama 70B) · Qwen 2.5 72B · Mistral Small 3.2 ·
+          construido con native.builder
+        </p>
         <p className="text-xs text-foreground/30 font-light">
           Contraparte explica y redacta. No es asesoría legal.
         </p>

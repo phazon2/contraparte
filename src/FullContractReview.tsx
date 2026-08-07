@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
 import {
   Send,
   Shield,
@@ -182,6 +182,64 @@ function computeConsensus(results: PanelResult[]): {
   }
 
   return { level, finalVerdict, text, chosenRedline };
+}
+
+// ─── Coverage check (client-side disclosure) ──────────────────────
+
+const ORDINAL_WORDS = [
+  "PRIMERO",
+  "SEGUNDO",
+  "TERCERO",
+  "CUARTO",
+  "QUINTO",
+  "SEXTO",
+  "SEPTIMO",
+  "OCTAVO",
+  "NOVENO",
+  "DECIMO",
+  "UNDECIMO",
+  "DUODECIMO",
+] as const;
+
+const ORDINAL_REGEX_SOURCE = `^\\s*(${ORDINAL_WORDS.join("|")})\\s*[:.\\-–—]`;
+
+function stripAccents(s: string): string {
+  return s
+    .toUpperCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+}
+
+/** Extract the leading ordinal word from a clause_id, or null. */
+function leadingOrdinal(clauseId: string): string | null {
+  const first = clauseId.trim().toUpperCase().match(/^[A-ZÁÉÍÓÚÑ]+/);
+  if (!first) return null;
+  const norm = stripAccents(first[0]);
+  return (ORDINAL_WORDS as readonly string[]).includes(norm) ? norm : null;
+}
+
+/** Ordinals present in the source text but absent from the segmented clauses. */
+function findMissingOrdinals(
+  text: string,
+  clauses: { clause_id: string }[]
+): string[] {
+  const foundInText = new Set<string>();
+  const regex = new RegExp(ORDINAL_REGEX_SOURCE, "gim");
+  let m: RegExpExecArray | null;
+  while ((m = regex.exec(text)) !== null) {
+    foundInText.add(stripAccents(m[1]));
+  }
+  if (foundInText.size === 0) return [];
+
+  const covered = new Set<string>();
+  for (const cl of clauses) {
+    const ord = leadingOrdinal(cl.clause_id);
+    if (ord) covered.add(ord);
+  }
+
+  return (ORDINAL_WORDS as readonly string[]).filter(
+    (ord) => foundInText.has(ord) && !covered.has(ord)
+  );
 }
 
 // ─── SSE consumer (same as App) ──────────────────────────────────
@@ -436,6 +494,26 @@ function ClauseRow({
               />
             ))}
           </div>
+
+          {/* Human-lawyer handoff: divided opinions + at least one red */}
+          {reviewState.finalVerdict === null &&
+            reviewState.results.some((r) => r.verdict === "red") && (
+            <div className="mt-3 rounded-xl border border-amarilla/40 bg-amarilla-bg/40 p-4">
+              <p className="text-[11px] font-bold text-amarilla uppercase tracking-wider mb-2">
+                Los tres modelos no coinciden.
+              </p>
+              <p className="text-sm text-foreground/85 leading-relaxed">
+                Una opinión marcó esta cláusula como riesgosa y las otras no.
+                Eso normalmente significa que depende del contexto: de tu
+                industria, de tu contrato colectivo o de cómo se aplique en la
+                práctica. Esta es exactamente la clase de cláusula que conviene
+                revisar con un abogado humano antes de firmar.
+              </p>
+              <p className="text-[10px] text-amarilla/50 mt-2">
+                Contraparte te muestra el desacuerdo en vez de promediarlo.
+              </p>
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -526,7 +604,11 @@ function ArtifactTabs({
 
 // ─── FullContractReview ───────────────────────────────────────────
 
-export default function FullContractReview() {
+export default function FullContractReview({
+  demoTrigger,
+}: {
+  demoTrigger?: { text: string; key: number } | null;
+}) {
   const [contractText, setContractText] = useState("");
   const [phase, setPhase] = useState<ContractPhase>("input");
   const [segmentResult, setSegmentResult] = useState<SegmentResult | null>(null);
@@ -536,7 +618,9 @@ export default function FullContractReview() {
   const [expandedClauseId, setExpandedClauseId] = useState<string | null>(null);
   const [artifactResult, setArtifactResult] = useState<ArtifactResult | null>(null);
   const [artifactError, setArtifactError] = useState<string | null>(null);
+  const [missingClauses, setMissingClauses] = useState<string[]>([]);
   const abortRef = useRef<AbortController | null>(null);
+  const applyDemoRef = useRef(0);
 
   // Stats
   const totalClauses = segmentResult?.clauses?.length ?? 0;
@@ -547,78 +631,103 @@ export default function FullContractReview() {
   const totalDivididas = Object.values(clauseReviews).filter((r) => r.finalVerdict === null && r.done).length;
 
   // ── Segment ────────────────────────────────────────────────────
-  const handleSegment = useCallback(async () => {
-    const text = contractText.trim();
-    if (!text) return;
+  const handleSegment = useCallback(
+    async (overrideText?: string) => {
+      const text = (overrideText ?? contractText).trim();
+      if (!text) return;
 
-    setPhase("segmenting");
-    setSegmentError(null);
-    setSegmentResult(null);
-    setClauseReviews({});
-    setCurrentClauseIndex(0);
-    setArtifactResult(null);
-    setArtifactError(null);
-
-    try {
-      const response = await fetch(SEGMENT_FN_URL, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ raw_text: text }),
-      });
-
-      const data = await response.json();
-
-      if (data.status === "error" || !data.clauses) {
-        setSegmentError(data.error || "No pude segmentar este documento");
-        setPhase("segment_error");
-        return;
-      }
-
-      const seg: SegmentResult = {
-        language: data.language || "es",
-        doc_summary: data.doc_summary || "",
-        signer_role: data.signer_role || "",
-        clauses: data.clauses,
-      };
-
-      // Cap at 25 clauses
-      if (seg.clauses.length > 25) {
-        seg.clauses = seg.clauses.slice(0, 25);
-      }
-
-      setSegmentResult(seg);
-
-      // Initialize review states for all clauses
-      const initial: Record<string, ClauseReviewState> = {};
-      for (const cl of seg.clauses) {
-        const initialCards: Record<string, CardState> = {};
-        for (const m of MODEL_ORDER) {
-          initialCards[m.id] = { phase: "warming", result: null };
-        }
-        initial[cl.clause_id] = {
-          cards: initialCards,
-          results: [],
-          clause: cl,
-          done: false,
-          finalVerdict: null,
-          consensusLevel: "1/3",
-          consensusText: "",
-          chosenRedline: "",
-        };
-      }
-      setClauseReviews(initial);
-
-      // Start reviewing clauses sequentially
-      setPhase("reviewing");
+      setPhase("segmenting");
+      setSegmentError(null);
+      setSegmentResult(null);
+      setClauseReviews({});
       setCurrentClauseIndex(0);
+      setArtifactResult(null);
+      setArtifactError(null);
+      setMissingClauses([]);
 
-      // Use a closure to process clauses sequentially
-      await processClausesSequentially(seg, initial);
-    } catch (err: any) {
-      setSegmentError(err.message || "Error al segmentar el documento");
-      setPhase("segment_error");
-    }
-  }, [contractText]);
+      try {
+        const response = await fetch(SEGMENT_FN_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ raw_text: text }),
+        });
+
+        const data = await response.json();
+
+        if (data.status === "error" || !data.clauses) {
+          setSegmentError(data.error || "No pude segmentar este documento");
+          setPhase("segment_error");
+          return;
+        }
+
+        const seg: SegmentResult = {
+          language: data.language || "es",
+          doc_summary: data.doc_summary || "",
+          signer_role: data.signer_role || "",
+          clauses: data.clauses,
+        };
+
+        // Cap at 25 clauses
+        if (seg.clauses.length > 25) {
+          seg.clauses = seg.clauses.slice(0, 25);
+        }
+
+        // Client-side coverage disclosure: tell the user if the segmenter
+        // dropped any ordinal-numbered clause (e.g. SEPTIMO, NOVENO).
+        setMissingClauses(findMissingOrdinals(text, seg.clauses));
+
+        setSegmentResult(seg);
+
+        // Initialize review states for all clauses
+        const initial: Record<string, ClauseReviewState> = {};
+        for (const cl of seg.clauses) {
+          const initialCards: Record<string, CardState> = {};
+          for (const m of MODEL_ORDER) {
+            initialCards[m.id] = { phase: "warming", result: null };
+          }
+          initial[cl.clause_id] = {
+            cards: initialCards,
+            results: [],
+            clause: cl,
+            done: false,
+            finalVerdict: null,
+            consensusLevel: "1/3",
+            consensusText: "",
+            chosenRedline: "",
+          };
+        }
+        setClauseReviews(initial);
+
+        // Start reviewing clauses sequentially
+        setPhase("reviewing");
+        setCurrentClauseIndex(0);
+
+        // Use a closure to process clauses sequentially
+        await processClausesSequentially(seg, initial);
+      } catch (err: any) {
+        const raw = String(err?.message || "");
+        const isNetwork =
+          (typeof navigator !== "undefined" && navigator.onLine === false) ||
+          /failed to fetch|networkerror|load failed|network request failed/i.test(raw);
+        setSegmentError(
+          isNetwork
+            ? "No pude conectar con el panel. Revisa tu conexión e inténtalo de nuevo — tu contrato sigue aquí, no se perdió."
+            : raw || "Error al segmentar el documento"
+        );
+        setPhase("segment_error");
+      }
+    },
+    [contractText]
+  );
+
+  // ── Demo contract trigger (from hero button) ────────────────────
+  useEffect(() => {
+    if (!demoTrigger) return;
+    if (demoTrigger.key === applyDemoRef.current) return;
+    applyDemoRef.current = demoTrigger.key;
+    setContractText(demoTrigger.text);
+    handleSegment(demoTrigger.text);
+  }, [demoTrigger, handleSegment]);
 
   // ── Sequential clause review ────────────────────────────────────
   const processClausesSequentially = useCallback(
@@ -801,9 +910,26 @@ export default function FullContractReview() {
   // ── Render ─────────────────────────────────────────────────────
   return (
     <div className="flex flex-col gap-6">
-      {/* ── Phase: input ── */}
-      {phase === "input" && (
-        <section className="max-w-3xl mx-auto w-full px-4">
+      {/* ── Phase: input / segment_error (input stays mounted) ── */}
+      {(phase === "input" || phase === "segment_error") && (
+        <section className="max-w-3xl mx-auto w-full px-4 flex flex-col gap-3">
+          {/* Error banner: pushes content down, never replaces the input */}
+          {segmentError && (
+            <div
+              role="alert"
+              className="rounded-xl border border-destructive/40 bg-destructive/10 p-4"
+            >
+              <p className="text-sm text-destructive leading-relaxed">
+                {segmentError}
+              </p>
+              <button
+                onClick={() => handleSegment()}
+                className="mt-3 rounded-lg border border-destructive/40 bg-card text-destructive font-semibold px-4 py-2 text-xs transition-all hover:bg-destructive/10 cursor-pointer"
+              >
+                Intentar de nuevo
+              </button>
+            </div>
+          )}
           <textarea
             value={contractText}
             onChange={(e) => setContractText(e.target.value)}
@@ -816,14 +942,14 @@ export default function FullContractReview() {
             label="o arrastra / elige un PDF"
           />
           <button
-            onClick={handleSegment}
+            onClick={() => handleSegment()}
             disabled={!contractText.trim()}
-            className="mt-3 w-full flex items-center justify-center gap-2 rounded-xl bg-accent text-white font-semibold px-6 py-3 text-sm transition-all duration-200 hover:bg-accent-hover active:scale-[0.98] disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
+            className="mt-1 w-full flex items-center justify-center gap-2 rounded-xl bg-accent text-white font-semibold px-6 py-3 text-sm transition-all duration-200 hover:bg-accent-hover active:scale-[0.98] disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
           >
             <Layers className="w-4 h-4" />
             Segmentar contrato
           </button>
-          <p className="mt-2 text-[11px] text-foreground/30 text-center">
+          <p className="text-[11px] text-foreground/30 text-center">
             Hasta 25 cláusulas. El contrato se segmenta, analiza y genera un artefacto propuesta.
           </p>
         </section>
@@ -836,21 +962,6 @@ export default function FullContractReview() {
             <Loader2 className="w-8 h-8 text-primary animate-spin" />
             <p className="text-sm text-foreground/60">Segmentando contrato en cláusulas…</p>
           </div>
-        </section>
-      )}
-
-      {/* ── Phase: segment_error ── */}
-      {phase === "segment_error" && (
-        <section className="max-w-3xl mx-auto w-full px-4">
-          <div className="rounded-xl border border-destructive/30 bg-destructive/10 p-4 text-sm text-destructive text-center">
-            {segmentError || "No pude segmentar este documento"}
-          </div>
-          <button
-            onClick={() => setPhase("input")}
-            className="mt-3 w-full rounded-xl border border-border bg-card text-foreground/70 font-semibold px-6 py-3 text-sm transition-all hover:bg-card-hover cursor-pointer"
-          >
-            Intentar de nuevo
-          </button>
         </section>
       )}
 
@@ -935,6 +1046,25 @@ export default function FullContractReview() {
                   className="h-full bg-accent rounded-full transition-all duration-500"
                   style={{ width: `${(reviewedClauses / totalClauses) * 100}%` }}
                 />
+              </div>
+            </section>
+          )}
+
+          {/* Coverage notice */}
+          {missingClauses.length > 0 && (
+            <section className="max-w-3xl mx-auto w-full px-4">
+              <div className="rounded-xl border border-amarilla/40 bg-amarilla-bg/40 p-4">
+                <p className="text-sm text-amarilla font-medium leading-relaxed">
+                  ⚠ Cobertura parcial: no pude separar {missingClauses.length} cláusula
+                  {missingClauses.length !== 1 ? "s" : ""} del documento
+                  ({missingClauses.join(", ")}). El panel revisó el resto. Revísalas tú
+                  mismo antes de firmar.
+                </p>
+                <p className="text-xs text-amarilla/60 italic mt-1">
+                  Partial coverage: {missingClauses.length} clause
+                  {missingClauses.length !== 1 ? "s" : ""} could not be separated
+                  ({missingClauses.join(", ")}). The panel reviewed the rest.
+                </p>
               </div>
             </section>
           )}
