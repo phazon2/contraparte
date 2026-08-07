@@ -15,6 +15,7 @@ import {
   Loader2,
 } from "lucide-react";
 import type { PanelResult, Verdict, CardState } from "./types";
+import PdfDropZone from "./PdfDropZone";
 
 // ─── Constants ────────────────────────────────────────────────────
 
@@ -384,7 +385,7 @@ function ClauseRow({
         <span className="text-[11px] font-bold text-foreground/50 uppercase tracking-wider shrink-0 w-12">
           {clauseId}
         </span>
-        <span className="text-sm text-foreground/80 font-medium truncate flex-1">
+        <span className={`text-sm text-foreground/80 font-medium flex-1 ${isExpanded ? "" : "truncate"}`}>
           {heading}
         </span>
         {done && (
@@ -542,6 +543,8 @@ export default function FullContractReview() {
   const reviewedClauses = Object.values(clauseReviews).filter((r) => r.done).length;
   const totalReds = Object.values(clauseReviews).filter((r) => r.finalVerdict === "red").length;
   const totalYellows = Object.values(clauseReviews).filter((r) => r.finalVerdict === "yellow").length;
+  const totalGreens = Object.values(clauseReviews).filter((r) => r.finalVerdict === "green").length;
+  const totalDivididas = Object.values(clauseReviews).filter((r) => r.finalVerdict === null && r.done).length;
 
   // ── Segment ────────────────────────────────────────────────────
   const handleSegment = useCallback(async () => {
@@ -716,8 +719,7 @@ export default function FullContractReview() {
         setClauseReviews({ ...reviews });
       }
 
-      // All clauses reviewed — phase remains "reviewing" until user clicks "Generar artifacto"
-      // (the generate button becomes visible)
+      // All clauses reviewed — phase remains "reviewing" until user clicks "Generar artefacto"
     },
     []
   );
@@ -778,7 +780,7 @@ export default function FullContractReview() {
       const data = await response.json();
 
       if (data.status === "error") {
-        setArtifactError(data.error || "No se pudo generar el artifacto");
+        setArtifactError(data.error || "No se pudo generar el artefacto");
         setPhase("artifact_error");
         return;
       }
@@ -791,7 +793,7 @@ export default function FullContractReview() {
       });
       setPhase("done");
     } catch (err: any) {
-      setArtifactError(err.message || "Error al generar el artifacto");
+      setArtifactError(err.message || "Error al generar el artefacto");
       setPhase("artifact_error");
     }
   }, [segmentResult, clauseReviews]);
@@ -809,6 +811,10 @@ export default function FullContractReview() {
             rows={10}
             className="w-full resize-none rounded-xl border border-border bg-card px-5 py-4 text-sm text-foreground placeholder:text-foreground/30 outline-none transition-all duration-200 focus:border-primary focus:ring-1 focus:ring-primary/30"
           />
+          <PdfDropZone
+            onTextExtracted={(t) => setContractText(t)}
+            label="o arrastra / elige un PDF"
+          />
           <button
             onClick={handleSegment}
             disabled={!contractText.trim()}
@@ -818,7 +824,7 @@ export default function FullContractReview() {
             Segmentar contrato
           </button>
           <p className="mt-2 text-[11px] text-foreground/30 text-center">
-            Hasta 25 cláusulas. El contrato se segmenta, analiza y genera un artifacto propuesta.
+            Hasta 25 cláusulas. El contrato se segmenta, analiza y genera un artefacto propuesta.
           </p>
         </section>
       )}
@@ -877,6 +883,12 @@ export default function FullContractReview() {
                   {totalYellows} amarilla{totalYellows !== 1 ? "s" : ""}
                 </span>
               )}
+              {totalGreens > 0 && (
+                <span className="flex items-center gap-1.5 text-verde">
+                  <CheckCircle className="w-3.5 h-3.5" />
+                  {totalGreens} verde{totalGreens !== 1 ? "s" : ""}
+                </span>
+              )}
             </div>
           </section>
 
@@ -890,9 +902,19 @@ export default function FullContractReview() {
                 {segmentResult.doc_summary}
               </p>
               {segmentResult.signer_role && (
-                <p className="text-xs text-foreground/50 mt-2 italic">
-                  Firma como: {segmentResult.signer_role}
-                </p>
+                <div className="mt-2 pt-2 border-t border-border/30">
+                  <div className="flex items-center gap-2 mb-0.5">
+                    <span className="text-[11px] font-bold text-foreground/50 uppercase tracking-wider">
+                      Firmas
+                    </span>
+                    <span className="text-[9px] text-foreground/30 uppercase tracking-wider">
+                      boilerplate
+                    </span>
+                  </div>
+                  <p className="text-xs text-foreground/50 italic">
+                    {segmentResult.signer_role}
+                  </p>
+                </div>
               )}
             </div>
           </section>
@@ -1001,7 +1023,7 @@ export default function FullContractReview() {
                 className="inline-flex items-center gap-2 rounded-xl bg-accent text-white font-semibold px-8 py-3 text-sm transition-all duration-200 hover:bg-accent-hover active:scale-[0.98] cursor-pointer"
               >
                 <Send className="w-4 h-4" />
-                Generar artifacto
+                Generar artefacto
               </button>
             </section>
           )}
@@ -1011,7 +1033,7 @@ export default function FullContractReview() {
             <section className="max-w-3xl mx-auto w-full px-4 text-center">
               <div className="flex flex-col items-center gap-4 py-8">
                 <Loader2 className="w-8 h-8 text-primary animate-spin" />
-                <p className="text-sm text-foreground/60">Generando artifacto de negociación…</p>
+                <p className="text-sm text-foreground/60">Generando artefacto de negociación…</p>
               </div>
             </section>
           )}
@@ -1020,7 +1042,7 @@ export default function FullContractReview() {
           {phase === "artifact_error" && (
             <section className="max-w-3xl mx-auto w-full px-4">
               <div className="rounded-xl border border-destructive/30 bg-destructive/10 p-4 text-sm text-destructive text-center">
-                {artifactError || "Error al generar el artifacto"}
+                {artifactError || "Error al generar el artefacto"}
               </div>
               <button
                 onClick={handleGenerateArtifact}
@@ -1037,32 +1059,50 @@ export default function FullContractReview() {
               {/* Summary card */}
               <section className="max-w-3xl mx-auto w-full px-4">
                 <div className="rounded-xl border border-accent/20 bg-accent/5 p-5 text-center">
-                  <div className="flex items-center justify-center gap-6 mb-3">
-                    {artifactResult.summary_card.reds > 0 && (
+                  <div className="flex items-center justify-center gap-4 flex-wrap mb-3">
+                    {totalReds > 0 && (
                       <span className="flex items-center gap-1.5 text-roja font-bold text-lg">
                         <AlertTriangle className="w-5 h-5" />
-                        {artifactResult.summary_card.reds} roja{artifactResult.summary_card.reds !== 1 ? "s" : ""}
+                        {totalReds} roja{totalReds !== 1 ? "s" : ""}
                       </span>
                     )}
-                    {artifactResult.summary_card.yellows > 0 && (
+                    {totalYellows > 0 && (
                       <span className="flex items-center gap-1.5 text-amarilla font-bold text-lg">
                         <AlertCircle className="w-5 h-5" />
-                        {artifactResult.summary_card.yellows} amarilla{artifactResult.summary_card.yellows !== 1 ? "s" : ""}
+                        {totalYellows} amarilla{totalYellows !== 1 ? "s" : ""}
                       </span>
                     )}
-                    {artifactResult.summary_card.greens > 0 && (
+                    {totalGreens > 0 && (
                       <span className="flex items-center gap-1.5 text-verde font-bold text-lg">
                         <CheckCircle className="w-5 h-5" />
-                        {artifactResult.summary_card.greens} verde{artifactResult.summary_card.greens !== 1 ? "s" : ""}
+                        {totalGreens} verde{totalGreens !== 1 ? "s" : ""}
+                      </span>
+                    )}
+                    {totalDivididas > 0 && (
+                      <span className="flex items-center gap-1.5 font-bold text-lg text-foreground/60">
+                        <Clock className="w-5 h-5" />
+                        {totalDivididas} dividida{totalDivididas !== 1 ? "s" : ""}
                       </span>
                     )}
                   </div>
                   <p className="text-sm text-foreground/70 font-medium">
                     {artifactResult.summary_card.one_liner_es}
                   </p>
-                  <p className="text-xs text-foreground/50 italic mt-1">
-                    {artifactResult.summary_card.one_liner_en}
-                  </p>
+                  {segmentResult.language === "es" ? (
+                    <details className="group mt-1 cursor-pointer">
+                      <summary className="inline-flex items-center gap-1 text-[10px] text-foreground/30 hover:text-foreground/50 transition-colors list-none [&::-webkit-details-marker]:hidden">
+                        <span className="text-[9px] font-bold uppercase tracking-wider">EN</span>
+                        <ChevronRight className="w-3 h-3 transition-transform group-open:rotate-90" />
+                      </summary>
+                      <p className="text-xs text-foreground/50 italic mt-1">
+                        {artifactResult.summary_card.one_liner_en}
+                      </p>
+                    </details>
+                  ) : (
+                    <p className="text-xs text-foreground/50 italic mt-1">
+                      {artifactResult.summary_card.one_liner_en}
+                    </p>
+                  )}
                   <p className="text-[10px] text-foreground/30 mt-3">
                     Contraparte explica y redacta. No es asesoría legal.
                   </p>

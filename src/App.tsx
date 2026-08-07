@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import type { PanelResult, Verdict, CardState } from "./types";
 import FullContractReview from "./FullContractReview";
+import PdfDropZone from "./PdfDropZone";
 
 // ─── Constants ────────────────────────────────────────────────────
 
@@ -397,6 +398,10 @@ function SingleClauseFlow() {
           rows={5}
           className="w-full resize-none rounded-xl border border-border bg-card px-5 py-4 text-sm text-foreground placeholder:text-foreground/30 outline-none transition-all duration-200 focus:border-primary focus:ring-1 focus:ring-primary/30 disabled:opacity-50"
           disabled={loading}
+        />
+        <PdfDropZone
+          onTextExtracted={(t) => setClauseText(t)}
+          label="o arrastra / elige un PDF"
         />
         <button
           onClick={handleSubmit}
